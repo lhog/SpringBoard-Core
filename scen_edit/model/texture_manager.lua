@@ -1,5 +1,29 @@
-local GL_COLOR_ATTACHMENT0_EXT = 0x8CE0
 TextureManager = Observable:extends{}
+
+local function CreateTextureObj(sizex, sizey, texOptions, fbo)
+	local GL_COLOR_ATTACHMENT0_EXT = 0x8CE0
+
+    local newTexture = gl.CreateTexture(sizex, sizey, texOptions)
+	local newFBO = fbo and gl.CreateFBO({
+		color0 = newTexture,
+		drawbuffers = {GL_COLOR_ATTACHMENT0_EXT},
+	})
+	return {texture = newTexture, fbo = newFBO}
+end
+
+local function DestroyTextureObj(texObject)
+	if texObject and type(texObject) == "array" then
+		if texObject.fbo then
+			gl.DeleteFBO(texObject.brdfFBO)
+		end
+		if texObject.texture then
+			gl.DeleteTexture(self.brdfTexture)
+		end
+	else
+		local traceBack = (debug and debug.traceback()) or "unknown traceback"
+		Log.Error("Attempt to call DestroyTextureObj() with invalid texObject object: at " .. traceBack)
+	end
+end
 
 function TextureManager:init()
     self:super('init')
@@ -94,25 +118,21 @@ function TextureManager:GetShadingTextureDefs()
     return self.shadingTextureDefs
 end
 
-function TextureManager:createMapTexture(notFBO, notMinMap)
+function TextureManager:createMapTexture(notFBO, notMipMap)
     local min_filter
-    if notMinMap then
+    if notMipMap then
         min_filter = GL.LINEAR
     else
         min_filter = GL.LINEAR --GL.LINEAR_MIPMAP_NEAREST
     end
-    local newTexture = gl.CreateTexture(self.TEXTURE_SIZE, self.TEXTURE_SIZE, {
+
+	return CreateTextureObj(self.TEXTURE_SIZE, self.TEXTURE_SIZE, {
         border = false,
         min_filter = min_filter,
         mag_filter = GL.LINEAR,
         wrap_s = GL.CLAMP_TO_EDGE,
         wrap_t = GL.CLAMP_TO_EDGE,
-    })
-	local newFBO = (not notFBO) and gl.CreateFBO({
-		color0 = newTexture,
-		drawbuffers = {GL_COLOR_ATTACHMENT0_EXT},
-	})
-	return {texture = newTexture, fbo = newFBO}
+    }, notFBO, notMipMap)
 end
 
 function TextureManager:SetupShader()
@@ -188,7 +208,7 @@ function TextureManager:generateMapTextures()
         end
 
         if sizeX and sizeZ then
-            local tex
+            local texOpt
 
             local min_filter = GL.LINEAR
             -- if name == "splat_distr" then
@@ -196,7 +216,7 @@ function TextureManager:generateMapTextures()
             -- end
 
             if engineName:find("splat_normals") then
-                tex = gl.CreateTexture(sizeX, sizeZ, {
+                texOpt = {
                     border = false,
                     min_filter = GL.LINEAR_MIPMAP_NEAREST,
                     mag_filter = GL.LINEAR,
@@ -204,37 +224,36 @@ function TextureManager:generateMapTextures()
                     wrap_t = GL.REPEAT,
                     aniso = ssmfTexAniso,
                     fbo = true,
-                })
+                }
                 --gl.GenerateMipmap(tex)
             else
-                tex = gl.CreateTexture(sizeX, sizeZ, {
+                texOpt = {
                     border = false,
                     min_filter = min_filter,
                     mag_filter = GL.LINEAR,
                     wrap_s = GL.CLAMP_TO_EDGE,
                     wrap_t = GL.CLAMP_TO_EDGE,
                     fbo = true,
-                })
+                }
             end
-			local texFBO = gl.CreateFBO({
-				color0 = tex,
-				drawbuffers = {GL_COLOR_ATTACHMENT0_EXT},
-			})
-			local texFboObj = {texture = tex, fbo = texFBO}
+
+			local texFboObj = CreateTextureObj(sizeX, sizeZ, texOpt, true)
     --         local engineTex = gl.Texture()
             self:Blit(engineName, texFboObj)
+
             if engineName:find("splat_normals") then
                 gl.GenerateMipmap(texFboObj.texture)
             end
+
             self.shadingTextures[name] = {
                 texture = texFboObj,
                 dirty = true,
             }
 
             if texDef._setParams then
-                success = Spring.SetMapShadingTexture(texDef._setParams[1], tex, texDef._setParams[2])
+                success = Spring.SetMapShadingTexture(texDef._setParams[1], texFboObj.texture, texDef._setParams[2]) --what does 3rd param do?
             else
-                success = Spring.SetMapShadingTexture(engineName, tex)
+                success = Spring.SetMapShadingTexture(engineName, texFboObj.texture)
             end
             if not success then
                 Log.Error("Failed to set new texture: " .. tostring(name) .. ", engine name: " .. tostring(engineName))
@@ -325,20 +344,17 @@ function TextureManager:getOldShadingTexture(name)
         local texture = texObj.texture
         local texInfo = gl.TextureInfo(texture)
         local texSizeX, texSizeZ = texInfo.xsize, texInfo.ysize
-        local oldTexture = gl.CreateTexture(texSizeX, texSizeZ, {
+
+		local oldTextureObj = CreateTextureObj(texSizeX, texSizeZ, {
             border = false,
             min_filter = GL.LINEAR,
             mag_filter = GL.LINEAR,
             wrap_s = GL.CLAMP_TO_EDGE,
             wrap_t = GL.CLAMP_TO_EDGE,
-            fbo = true,
-        })
-        self:Blit(texture, oldTexture)
+        }, true)
 
-        local oldTextureObj = {
-            texture = oldTexture,
-            dirty = texObj.dirty,
-        }
+        self:Blit(texture, oldTextureObj)
+
         self.oldShadingTextures[name] = oldTextureObj
     end
 
@@ -414,19 +430,18 @@ function TextureManager:CacheTexture(name)
         -- maximum number of textures exceeded
         if #self.cachedTextures > self.maxCache then
             local obj = self.cachedTextures[1]
-            gl.DeleteTexture(obj.texture)
+            DestroyTextureObj(obj.texture)
             self.cachedTexturesMapping[obj.name] = nil
             table.remove(self.cachedTextures, 1)
         end
 
         local texInfo = gl.TextureInfo(name)
-        local texture = gl.CreateTexture(texInfo.xsize, texInfo.ysize, {
-            fbo = true,
-        })
-        self:Blit(name, texture)
-        local obj = { texture = texture, name = name }
-        self.cachedTexturesMapping[name] = obj
-        table.insert(self.cachedTextures, obj)
+		local textureObj = CreateTextureObj(texInfo.xsize, texInfo.ysize, { }, true)
+
+        self:Blit(name, textureObj)
+
+        self.cachedTexturesMapping[name] = textureObj
+        table.insert(self.cachedTextures, textureObj)
     end)
 end
 
