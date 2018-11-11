@@ -1,3 +1,4 @@
+local GL_COLOR_ATTACHMENT0_EXT = 0x8CE0
 TextureManager = Observable:extends{}
 
 function TextureManager:init()
