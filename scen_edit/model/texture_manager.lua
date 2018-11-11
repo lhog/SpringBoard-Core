@@ -100,14 +100,18 @@ function TextureManager:createMapTexture(notFBO, notMinMap)
     else
         min_filter = GL.LINEAR --GL.LINEAR_MIPMAP_NEAREST
     end
-    return gl.CreateTexture(self.TEXTURE_SIZE, self.TEXTURE_SIZE, {
+    local newTexture = gl.CreateTexture(self.TEXTURE_SIZE, self.TEXTURE_SIZE, {
         border = false,
         min_filter = min_filter,
         mag_filter = GL.LINEAR,
         wrap_s = GL.CLAMP_TO_EDGE,
         wrap_t = GL.CLAMP_TO_EDGE,
-        fbo = not notFBO,
     })
+	local newFBO = (not notFBO) and gl.CreateFBO({
+		color0 = newTexture,
+		drawbuffers = {GL_COLOR_ATTACHMENT0_EXT},
+	})
+	return {texture = newTexture, fbo = newFBO}
 end
 
 function TextureManager:SetupShader()
@@ -146,15 +150,15 @@ function TextureManager:generateMapTextures()
         for j = 0, math.floor(Game.mapSizeZ / self.TEXTURE_SIZE) do
             local mapTexture = self:createMapTexture()
 
-            Spring.GetMapSquareTexture(i, j, 0, oldMapTexture)
-            self:Blit(oldMapTexture, mapTexture)
+            Spring.GetMapSquareTexture(i, j, 0, oldMapTexture.texture)
+            self:Blit(oldMapTexture.texture, mapTexture)
             --gl.GenerateMipmap(mapTexture)
 
             self.mapFBOTextures[i][j] = {
                 texture = mapTexture,
                 dirty = false,
             }
-            Spring.SetMapSquareTexture(i, j, mapTexture)
+            Spring.SetMapSquareTexture(i, j, mapTexture.texture)
         end
     end
 
@@ -211,13 +215,18 @@ function TextureManager:generateMapTextures()
                     fbo = true,
                 })
             end
+			local texFBO = gl.CreateFBO({
+				color0 = tex,
+				drawbuffers = {GL_COLOR_ATTACHMENT0_EXT},
+			})
+			local texFboObj = {texture = tex, fbo = texFBO}
     --         local engineTex = gl.Texture()
-            self:Blit(engineName, tex)
+            self:Blit(engineName, texFboObj)
             if engineName:find("splat_normals") then
-                gl.GenerateMipmap(tex)
+                gl.GenerateMipmap(texFboObj.texture)
             end
             self.shadingTextures[name] = {
-                texture = tex,
+                texture = texFboObj,
                 dirty = true,
             }
 
@@ -379,13 +388,21 @@ function TextureManager:getMapTextures(startX, startZ, endX, endZ)
     return textures
 end
 
-function TextureManager:Blit(tex1, tex2)
-    gl.Blending("disable")
-    gl.Texture(tex1)
-    gl.RenderToTexture(tex2, function()
-        gl.TexRect(-1,-1, 1, 1, 0, 0, 1, 1)
-    end)
-    gl.Texture(false)
+function TextureManager:Blit(srcTex, dstTexFboObj)
+	--Spring.Echo("TextureManager:Blit", texSrc, texDst, texDstFBO)
+	local dstFbo = dstTexFboObj.fbo
+	if gl.IsValidFBO(dstFbo) then
+		gl.Texture(srcTex)
+		gl.ActiveFBO(dstFbo, function()
+			gl.DepthTest(false)
+			gl.Blending(false)
+			gl.TexRect(-1,-1, 1, 1, 0, 0, 1, 1)
+		end)
+		gl.Texture(false)
+	else
+		local traceBack = (debug and debug.traceback()) or "unknown traceback"
+		Log.Error("Attempt to call TextureManager:Blit() with invalid dstTexFboObj object: at " .. traceBack)
+	end
 end
 
 function TextureManager:CacheTexture(name)
