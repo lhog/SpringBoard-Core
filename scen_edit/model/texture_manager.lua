@@ -1,5 +1,35 @@
 TextureManager = Observable:extends{}
 
+local function CreateTexture(sizex, sizey, texOptions)
+	local GL_COLOR_ATTACHMENT0_EXT = 0x8CE0
+
+	local fbo = false
+	if texOptions and texOptions.fbo then
+		fbo = true
+		texOptions.fbo = nil
+	end
+
+	local newTexture = gl.CreateTexture(sizex, sizey, texOptions)
+	if fbo then
+		local mt = getmetatable(newTexture)
+		mt.fbo = gl.CreateFBO({
+			color0 = newTexture,
+			drawbuffers = {GL_COLOR_ATTACHMENT0_EXT},
+		})
+	end
+	return newTexture
+end
+
+local function DeleteTexture(texture)
+	if texture then
+		local mt = getmetatable(texture)
+		if mt and mt.fbo then
+			gl.DeleteFBO(mt.fbo)
+		end
+		gl.DeleteTexture(texture)
+	end
+end
+
 function TextureManager:init()
     self:super('init')
     self.TEXTURE_SIZE = 1024
@@ -100,7 +130,7 @@ function TextureManager:createMapTexture(notFBO, notMinMap)
     else
         min_filter = GL.LINEAR --GL.LINEAR_MIPMAP_NEAREST
     end
-    return gl.CreateTexture(self.TEXTURE_SIZE, self.TEXTURE_SIZE, {
+    return CreateTexture(self.TEXTURE_SIZE, self.TEXTURE_SIZE, {
         border = false,
         min_filter = min_filter,
         mag_filter = GL.LINEAR,
@@ -191,7 +221,7 @@ function TextureManager:generateMapTextures()
             -- end
 
             if engineName:find("splat_normals") then
-                tex = gl.CreateTexture(sizeX, sizeZ, {
+                tex = CreateTexture(sizeX, sizeZ, {
                     border = false,
                     min_filter = GL.LINEAR_MIPMAP_NEAREST,
                     mag_filter = GL.LINEAR,
@@ -202,7 +232,7 @@ function TextureManager:generateMapTextures()
                 })
                 --gl.GenerateMipmap(tex)
             else
-                tex = gl.CreateTexture(sizeX, sizeZ, {
+                tex = CreateTexture(sizeX, sizeZ, {
                     border = false,
                     min_filter = min_filter,
                     mag_filter = GL.LINEAR,
@@ -293,7 +323,7 @@ end
 function TextureManager:resetMapTextures()
     for i, v in pairs(self.mapFBOTextures) do
         for j, textureObj in pairs(v) do
-            gl.DeleteTexture(textureObj.texture)
+            DeleteTexture(textureObj.texture)
             Spring.SetMapSquareTexture(i, j, "")
         end
     end
@@ -315,7 +345,7 @@ function TextureManager:getOldShadingTexture(name)
         local texture = texObj.texture
         local texInfo = gl.TextureInfo(texture)
         local texSizeX, texSizeZ = texInfo.xsize, texInfo.ysize
-        local oldTexture = gl.CreateTexture(texSizeX, texSizeZ, {
+        local oldTexture = CreateTexture(texSizeX, texSizeZ, {
             border = false,
             min_filter = GL.LINEAR,
             mag_filter = GL.LINEAR,
@@ -379,6 +409,7 @@ function TextureManager:getMapTextures(startX, startZ, endX, endZ)
     return textures
 end
 
+--[[
 function TextureManager:Blit(tex1, tex2)
     gl.Blending("disable")
     gl.Texture(tex1)
@@ -386,6 +417,28 @@ function TextureManager:Blit(tex1, tex2)
         gl.TexRect(-1,-1, 1, 1, 0, 0, 1, 1)
     end)
     gl.Texture(false)
+end
+]]--
+
+function TextureManager:Blit(srcTex, dstTex)
+	local mt = getmetatable(dstTex or {})
+	if mt == nil then
+		return
+	end
+	local fbo = mt.fbo
+	Spring.Echo("TextureManager:Blit", srcTex, dstTex, fbo)
+	if fbo and gl.IsValidFBO(fbo) then
+		gl.Texture(0, srcTex)
+		gl.ActiveFBO(fbo, function()
+			gl.DepthTest(false)
+			gl.Blending(false)
+			gl.TexRect(-1,-1, 1, 1, 0, 0, 1, 1)
+		end)
+		gl.Texture(0, false)
+	else
+		local traceBack = (debug and debug.traceback()) or "unknown traceback"
+		Log.Error("Attempt to call TextureManager:Blit() with invalid dstTex object: at " .. traceBack)
+	end
 end
 
 function TextureManager:CacheTexture(name)
@@ -396,13 +449,13 @@ function TextureManager:CacheTexture(name)
         -- maximum number of textures exceeded
         if #self.cachedTextures > self.maxCache then
             local obj = self.cachedTextures[1]
-            gl.DeleteTexture(obj.texture)
+            DeleteTexture(obj.texture)
             self.cachedTexturesMapping[obj.name] = nil
             table.remove(self.cachedTextures, 1)
         end
 
         local texInfo = gl.TextureInfo(name)
-        local texture = gl.CreateTexture(texInfo.xsize, texInfo.ysize, {
+        local texture = CreateTexture(texInfo.xsize, texInfo.ysize, {
             fbo = true,
         })
         self:Blit(name, texture)
@@ -460,12 +513,12 @@ function TextureManager:RemoveStackItem(stackItem)
                 for j, oldTextureObj in pairs(v) do
                     self.stackSize = self.stackSize - self:_CalculateTextureMemorySize(oldTextureObj.texture)
 
-                    gl.DeleteTexture(oldTextureObj.texture)
+                    DeleteTexture(oldTextureObj.texture)
                 end
             end
         else
             self.stackSize = self.stackSize - self:_CalculateTextureMemorySize(value.texture)
-            gl.DeleteTexture(value.texture)
+            DeleteTexture(value.texture)
         end
     end
 end
